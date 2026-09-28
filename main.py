@@ -178,6 +178,224 @@ def format_timestamp(seconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
+# ─── 字幕断句：把过长的 Whisper segment 拆成短 cue ────────────────────────
+# Whisper 的 segment 最长可达 30s，直接一条写一条 SRT 会让字幕长时间停留在
+# 画面上（且一行超长）。下面利用词级时间戳把它切成 ≤MAX_CUE_SEC 的短句，
+# 断点优先落在标点上，保证可读性。
+MAX_CUE_SEC = 6.0        # 单条字幕最长显示时长（秒）
+MAX_CUE_CHARS = 84       # 单条字幕最多字符数（约 42 字/行 × 2 行）
+MIN_CUE_SEC = 1.0        # 切分后单条最短时长，低于此值尽量并入相邻条
+WRAP_WIDTH = 42          # 英文自动折行宽度（字符）
+WRAP_MAX_LINES = 2       # 最多折成几行
+
+_SENTENCE_END = (".", "!", "?", "…", "。", "！", "？")
+_CLAUSE_END = (",", ";", ":", "—", "–", "、", "，", "；", "：")
+
+
+def wrap_text(text, width=WRAP_WIDTH, max_lines=WRAP_MAX_LINES):
+    """把一行字幕按单词边界折成最多 max_lines 行；超出部分并入最后一行。"""
+    text = " ".join((text or "").split())
+    if not text or len(text) <= width:
+        return text
+
+    lines = []
+    cur = ""
+    for word in text.split(" "):
+        if cur and len(cur) + 1 + len(word) > width:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = f"{cur} {word}" if cur else word
+    if cur:
+        lines.append(cur)
+
+    if len(lines) <= max_lines:
+        return "\n".join(lines)
+    head = lines[: max_lines - 1]
+    tail = " ".join(lines[max_lines - 1:])
+    return "\n".join(head + [tail])
+
+
+def _words_of(segment):
+    """把 segment 的词级时间戳统一成 [(start, end, text), ...]。"""
+    raw = segment.get("words") or []
+    words = []
+    for w in raw:
+        try:
+            if isinstance(w, dict):
+                ws, we, wt = w["start"], w["end"], w["word"]
+            else:
+                ws, we, wt = w[0], w[1], w[2]
+            words.append((float(ws), float(we), str(wt)))
+        except (TypeError, KeyError, IndexError):
+            continue
+    return words
+
+
+def _split_text_evenly(text, n):
+    """兜底切分用：按词数把文本尽量平均切成 n 份。"""
+    words = (text or "").split()
+    if n <= 1 or len(words) <= 1:
+        return [text] if text else []
+    parts = []
+    for i in range(n):
+        lo = round(i * len(words) / n)
+        hi = round((i + 1) * len(words) / n)
+        chunk = " ".join(words[lo:hi]).strip()
+        if chunk:
+            parts.append(chunk)
+    return parts or [text]
+
+
+def _split_by_chars(segment, max_sec, max_chars):
+    """兜底切分：没有词级时间戳时，按字符数/时长估算切点，时间按比例分配。"""
+    start = float(segment.get("start", 0.0))
+    end = float(segment.get("end", 0.0))
+    text = (segment.get("text") or "").strip()
+    if not text or end <= start:
+        return [dict(segment)] if text else []
+
+    n = max(
+        1,
+        math.ceil(len(text) / max_chars),
+        math.ceil((end - start) / max_sec),
+    )
+    # 按字符比例分配时，长句会被分到更长时间；逐步增加份数直到每份都不超时
+    parts = _split_text_evenly(text, n)
+    for _ in range(4):
+        if len(parts) <= 1:
+            break
+        weights = [max(1, len(p)) for p in parts]
+        total_w = sum(weights)
+        if max((end - start) * w / total_w for w in weights) <= max_sec:
+            break
+        n += 1
+        parts = _split_text_evenly(text, n)
+    if len(parts) <= 1:
+        return [dict(segment)]
+
+    weights = [max(1, len(p)) for p in parts]
+    total_w = sum(weights)
+    out = []
+    t = start
+    for i, part in enumerate(parts):
+        cue_end = end if i == len(parts) - 1 else t + (end - start) * weights[i] / total_w
+        out.append({
+            "start": t,
+            "end": cue_end,
+            "text": part,
+            "avg_logprob": segment.get("avg_logprob", float("nan")),
+        })
+        t = cue_end
+    return out
+
+
+def split_segment(segment, max_sec=MAX_CUE_SEC, max_chars=MAX_CUE_CHARS,
+                  min_sec=MIN_CUE_SEC):
+    """
+    把一条 segment 拆成多条短 cue。
+
+    优先用词级时间戳精确切分；没有词级时间戳时退回按字符估算。
+    切分点优先级：句末标点 → 从句标点（且本条已接近上限）→ 到时/字数上限。
+    """
+    words = _words_of(segment)
+    if not words:
+        return _split_by_chars(segment, max_sec, max_chars)
+
+    n = len(words)
+    # 前缀字符数：快速计算任意 words[a:b] 的可见字符数（含词间空格）
+    char_run = [0] * (n + 1)
+    for i, w in enumerate(words):
+        char_run[i + 1] = char_run[i] + len(w[2].strip())
+
+    def cue_chars(a, b):
+        return char_run[b] - char_run[a] + max(0, b - a - 1)
+
+    spans = []
+    i = 0
+    while i < n:
+        start_t = words[i][0]
+        # 在不超时长/字数的前提下，尽可能多地纳入单词
+        b = i
+        while b < n:
+            if (words[b][1] - start_t) > max_sec or cue_chars(i, b + 1) > max_chars:
+                break
+            b += 1
+        if b == i:          # 单个词就超限，至少纳入它，避免死循环
+            b = i + 1
+
+        # 到达上限时，回退到窗口内最后一个标点断点，让句子更自然
+        if b < n:
+            best = None
+            for k in range(b, i, -1):
+                if words[k - 1][2].strip().endswith(_SENTENCE_END):
+                    best = k
+                    break
+            if best is None or (words[best - 1][1] - start_t) < min_sec:
+                for k in range(b, i, -1):
+                    if words[k - 1][2].strip().endswith(_CLAUSE_END):
+                        best = k
+                        break
+                if best is not None and (words[best - 1][1] - start_t) < min_sec:
+                    best = None
+            if best is not None:
+                b = best
+
+        spans.append((i, b))
+        i = b
+
+    out = []
+    for a, b in spans:
+        ctext = "".join(x[2] for x in words[a:b]).strip()
+        if not ctext:
+            continue
+        out.append({
+            "start": words[a][0],
+            "end": words[b - 1][1],
+            "text": ctext,
+            "avg_logprob": segment.get("avg_logprob", float("nan")),
+        })
+    # 首尾对齐原段，避免切分后与相邻段之间出现小空洞
+    if out:
+        out[0]["start"] = min(float(segment.get("start", out[0]["start"])), out[0]["start"])
+        out[-1]["end"] = max(float(segment.get("end", out[-1]["end"])), out[-1]["end"])
+    return out
+
+
+def refine_cues(cues, min_sec=MIN_CUE_SEC, max_sec=MAX_CUE_SEC,
+                max_chars=MAX_CUE_CHARS):
+    """合并过短 cue，并保证时间轴单调、不重叠、不短于 min_sec。"""
+    merged = []
+    for c in cues:
+        if c["end"] - c["start"] <= 0.01:
+            continue
+        if merged and (c["end"] - c["start"]) < min_sec:
+            prev = merged[-1]
+            if ((c["end"] - prev["start"]) <= max_sec * 1.5
+                    and len(prev["text"]) + 1 + len(c["text"]) <= max_chars * 1.5):
+                prev["text"] = f'{prev["text"]} {c["text"]}'.strip()
+                prev["end"] = c["end"]
+                continue
+        merged.append(dict(c))
+
+    for i, c in enumerate(merged):
+        if i > 0:
+            c["start"] = max(c["start"], merged[i - 1]["end"])
+        limit = merged[i + 1]["start"] if i + 1 < len(merged) else None
+        if c["end"] - c["start"] < min_sec:
+            target = c["start"] + min_sec
+            c["end"] = target if limit is None else min(target, limit)
+    return [c for c in merged if c["end"] - c["start"] > 0.01]
+
+
+def split_segments(segments):
+    """对所有 segment 做断句，再合并过短 cue。"""
+    cues = []
+    for seg in segments:
+        cues.extend(split_segment(seg))
+    return refine_cues(cues)
+
+
 # ─── 转录后补漏：检测 + 二次补录 + 合并 ───────────────────────────────────
 GAP_THRESHOLD = 2.5        # 间隙≥2.5s 视为可疑遗漏
 BACKFILL_CHUNK = 30.0      # 单次补录窗口上限（Whisper 单窗口即 30s）
@@ -293,7 +511,8 @@ def transcribe_clip(model, video_file, start, end, lang="en",
         temperature=0.0,
         no_speech_threshold=no_speech_threshold,
         condition_on_previous_text=condition_on_previous_text,
-        word_timestamps=False,
+        # 补录段同样要能断句，因此也开启词级时间戳
+        word_timestamps=True,
         clip_timestamps=[float(start), float(end)],
         compression_ratio_threshold=2.4,
         # 注意：faster-whisper 的参数名是 log_prob_threshold（带下划线）。
@@ -316,6 +535,10 @@ def transcribe_clip(model, video_file, start, end, lang="en",
             "end": min(seg.end, end),
             "text": txt,
             "avg_logprob": getattr(seg, "avg_logprob", float("nan")),
+            "words": [
+                (float(w.start), float(w.end), str(w.word))
+                for w in (getattr(seg, "words", None) or [])
+            ],
         })
     return out
 
@@ -453,7 +676,8 @@ def main():
         temperature=0.0,
         no_speech_threshold=0.6,
         condition_on_previous_text=True,
-        word_timestamps=False,
+        # 词级时间戳：断句时需要用它精确切分长 segment
+        word_timestamps=True,
         beam_size=5,
         vad_filter=False,
     )
@@ -466,6 +690,10 @@ def main():
             "end": seg.end,
             "text": (seg.text or "").strip(),
             "avg_logprob": getattr(seg, "avg_logprob", float("nan")),
+            "words": [
+                (float(w.start), float(w.end), str(w.word))
+                for w in (getattr(seg, "words", None) or [])
+            ],
         })
         if audio_duration:
             pct = min(99, int(seg.end / audio_duration * 100))
@@ -535,6 +763,11 @@ def main():
     else:
         print("\n✓ 未检测到可疑遗漏间隙")
 
+    # ─── 断句：把过长的 segment 拆成短 cue ────────────────────────────────
+    raw_count = len(clean_segments)
+    clean_segments = split_segments(clean_segments)
+    print(f"断句：{raw_count} 段 → {len(clean_segments)} 条字幕")
+
     # ─── 输出 SRT ──────────────────────────────────────────────────────
     written = 0
     with open(srt_filename, "w", encoding="utf-8") as f:
@@ -549,7 +782,7 @@ def main():
             written += 1
             f.write(f"{written}\n")
             f.write(f"{format_timestamp(start)} --> {format_timestamp(end)}\n")
-            f.write(f"{text}\n\n")
+            f.write(f"{wrap_text(text)}\n\n")
 
             print(f"[{format_timestamp(start)} --> {format_timestamp(end)}] {text}")
 
