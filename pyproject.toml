@@ -1,0 +1,22 @@
+[project]
+name = "videosub"
+version = "0.2.0"
+description = "Video download + Whisper transcription (NVIDIA CUDA) + LLM translation — all-in-one desktop tool"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # 转录引擎：CTranslate2 后端，支持 NVIDIA CUDA 加速
+    "faster-whisper>=1.1.0",
+    "ctranslate2>=4.5.0",
+    # 音频解码 / 时长探测（无需系统 ffmpeg）
+    "av>=13.0.0",
+    # 视频下载（bin/yt-dlp.exe 的备用运行时）
+    "yt-dlp>=2024.1.0",
+    # Windows 上的 CUDA 运行库。CTranslate2 不会自动搜索这些路径，
+    # 需要由 main.py 把 nvidia/*/bin 加入 PATH（详见 add_cuda_dll_dirs）
+    #
+    # 注意：不需要 nvidia-cudnn-cu12。实测 CTranslate2 4.8.2 的 CUDA 路径只用
+    # cublas64_12.dll，移走 1092 MB 的 cuDNN 后转录完全正常（13.4x 实时）。
+    "nvidia-cublas-cu12>=12.4.0; sys_platform == 'win32'",
+    "nvidia-cuda-nvrtc-cu12>=12.4.0; sys_platform == 'win32'",
+]

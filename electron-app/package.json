@@ -1,0 +1,48 @@
+{
+  "name": "video-subtitle-tool",
+  "version": "1.0.0",
+  "description": "VideoSub — download videos, transcribe with Whisper, translate with LLM",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "build:dir": "electron-builder --dir"
+  },
+  "build": {
+    "appId": "com.videosub.app",
+    "productName": "VideoSub",
+    "directories": {
+      "output": "dist"
+    },
+    "extraResources": [
+      {
+        "from": "../bin",
+        "to": "bin"
+      },
+      {
+        "from": "../fonts",
+        "to": "fonts"
+      },
+      {
+        "from": "../main.py",
+        "to": "main.py"
+      },
+      {
+        "from": "../.venv",
+        "to": ".venv"
+      }
+    ],
+    "win": {
+      "target": "portable"
+    }
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.105.0",
+    "openai": "^4.73.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  }
+}

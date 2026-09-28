@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>本地视频转录 — VideoSub</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    body { overflow-y: auto; }
+    #local-app {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 28px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+    .local-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .local-header .app-icon { margin: 0; }
+    .local-header h1 { font-size: 18px; font-weight: 600; }
+    .local-header p { font-size: 12px; color: var(--text-tertiary); }
+    .file-display {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-secondary);
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <div id="local-app">
+
+    <div class="local-header">
+      <div class="app-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="23 7 16 12 23 17 23 7"/>
+          <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+        </svg>
+      </div>
+      <div>
+        <h1>本地视频转录</h1>
+        <p>选择视频文件 → 转录 → 翻译 → 烧录（跳过下载）</p>
+      </div>
+    </div>
+
+    <!-- 选择视频文件 -->
+    <section class="card">
+      <div class="form-group" style="margin-bottom: 12px;">
+        <label>视频文件路径</label>
+        <div style="display: flex; gap: 8px;">
+          <input type="text" id="videoPath" placeholder="点击右侧浏览选择本地视频文件…" style="flex: 1;" readonly>
+          <button id="browseVideoBtn" class="btn-sm" type="button">浏览</button>
+        </div>
+      </div>
+
+      <div class="form-row three-col">
+        <div class="form-group">
+          <label for="modelSize">Whisper Model (GPU)</label>
+          <select id="modelSize">
+            <option value="tiny.en">tiny.en (Fastest)</option>
+            <option value="small.en">small.en</option>
+            <option value="medium.en">medium.en</option>
+            <option value="large-v3">large-v3 (Most Accurate)</option>
+            <option value="large-v3-turbo" selected>large-v3-turbo (GPU Recommended)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="targetLang">Translate To</label>
+          <select id="targetLang">
+            <option value="zh" selected>Chinese (中文)</option>
+            <option value="tr">Turkish (Türkçe)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="burnSubtitleMode">硬嵌入字幕</label>
+          <select id="burnSubtitleMode">
+            <option value="none" selected>不嵌入 (仅生成字幕)</option>
+            <option value="en">仅英语 (English only)</option>
+            <option value="zh">仅中文 (Chinese only)</option>
+            <option value="en-zh">中英双语 (English + Chinese)</option>
+            <option value="tr">仅土耳其语 (Turkish only)</option>
+            <option value="en-tr">英土双语 (English + Turkish)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row three-col">
+        <div class="form-group">
+          <label for="apiKey">LLM API Key</label>
+          <input type="password" id="apiKey" placeholder="sk-...">
+        </div>
+        <div class="form-group">
+          <label for="baseUrl">API Endpoint</label>
+          <input type="text" id="baseUrl" placeholder="https://api.deepseek.com/anthropic">
+        </div>
+        <div class="form-group">
+          <label for="llmModel">LLM Model</label>
+          <input type="text" id="llmModel" placeholder="deepseek-flash" value="deepseek-flash">
+        </div>
+      </div>
+
+      <div class="action-row" style="margin-top: 4px;">
+        <button id="startBtn" class="btn-primary">开始转录翻译</button>
+        <button id="cancelBtn" class="btn-cancel" style="display: none;">取消</button>
+        <span id="statusBadge" class="badge idle">Ready</span>
+      </div>
+    </section>
+
+    <!-- Progress -->
+    <section class="card progress-section">
+      <div class="progress-bar-bg">
+        <div id="progressBar" class="progress-bar-fill"></div>
+      </div>
+      <div class="progress-steps">
+        <span class="step">Transcribe</span>
+        <span class="step">Translate</span>
+        <span class="step">Burn</span>
+      </div>
+    </section>
+
+    <!-- Log -->
+    <section class="card" style="display: flex; flex-direction: column;">
+      <div class="output-header">
+        <h2>Log</h2>
+        <button id="clearBtn" class="btn-sm">Clear</button>
+      </div>
+      <pre id="logBox" class="log-box"></pre>
+    </section>
+
+  </div>
+
+  <script src="local.js"></script>
+</body>
+</html>

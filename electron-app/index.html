@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>VideoSub</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+
+    <!-- ═══ Sidebar ══════════════════════════════════════ -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <div class="app-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="23 7 16 12 23 17 23 7"/>
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+          </svg>
+        </div>
+        <h1>VideoSub</h1>
+        <p class="sidebar-tagline">Download · Transcribe · Translate</p>
+      </div>
+
+      <nav class="steps-nav">
+        <div id="stepDownload" class="step-item">
+          <span class="step-dot"></span>
+          Download
+        </div>
+        <div id="stepTranscribe" class="step-item">
+          <span class="step-dot"></span>
+          Transcribe
+        </div>
+        <div id="stepTranslate" class="step-item">
+          <span class="step-dot"></span>
+          Translate
+        </div>
+        <div id="stepBurn" class="step-item">
+          <span class="step-dot"></span>
+          Burn
+        </div>
+      </nav>
+
+      <div class="sidebar-section">
+        <button id="openLocalBtn" class="sidebar-action-btn" title="选择本地视频文件，跳过下载，直接转录翻译烧录">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
+            <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3l-2-3H10L8 7H5a2 2 0 00-2 2z"/>
+            <circle cx="12" cy="13" r="3"/>
+          </svg>
+          <span>本地视频</span>
+        </button>
+      </div>
+
+      <div class="sidebar-footer">
+        <button id="themeToggle" class="theme-toggle">
+          <svg class="theme-toggle-icon" id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="5"/>
+            <line x1="12" y1="1" x2="12" y2="3"/>
+            <line x1="12" y1="21" x2="12" y2="23"/>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+            <line x1="1" y1="12" x2="3" y2="12"/>
+            <line x1="21" y1="12" x2="23" y2="12"/>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+          </svg>
+          <span id="themeLabel">Dark</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- ═══ Main Content ══════════════════════════════════ -->
+    <main id="main">
+
+      <!-- URL + Settings Card -->
+      <section class="card">
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label for="url">Video URL</label>
+            <input type="text" id="url" placeholder="Paste a YouTube or video link…" autofocus>
+          </div>
+        </div>
+        <div id="seriesHint" class="form-hint" style="display: none;">
+          💡 系列模式提示：请输入播放列表（Playlist）链接，而不是单集链接
+        </div>
+
+        <div class="form-row three-col">
+          <div class="form-group">
+            <label for="modelSize">Whisper Model (GPU)</label>
+            <select id="modelSize">
+              <option value="tiny.en">tiny.en (Fastest)</option>
+              <option value="small.en">small.en</option>
+              <option value="medium.en">medium.en</option>
+              <option value="large-v3">large-v3 (Most Accurate)</option>
+              <option value="large-v3-turbo" selected>large-v3-turbo (GPU Recommended)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="targetLang">Translate To</label>
+            <select id="targetLang">
+              <option value="zh" selected>Chinese (中文)</option>
+              <option value="tr">Turkish (Türkçe)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="apiKey">LLM API Key</label>
+            <input type="password" id="apiKey" placeholder="sk-...">
+          </div>
+          <div class="form-group">
+            <label for="baseUrl">API Endpoint</label>
+            <input type="text" id="baseUrl" placeholder="https://api.deepseek.com/anthropic">
+          </div>
+          <div class="form-group">
+            <label for="llmModel">LLM Model</label>
+            <input type="text" id="llmModel" placeholder="deepseek-flash" value="deepseek-flash">
+          </div>
+        </div>
+
+        <div class="form-row" style="margin-top: 8px;">
+          <div class="form-group flex-1">
+            <label for="cookiesFile">Cookies 文件 (B站等需要登录)</label>
+            <div style="display: flex; gap: 8px;">
+              <input type="text" id="cookiesFile" placeholder="选择 cookies.txt 文件…" style="flex: 1;">
+              <button id="browseCookiesBtn" class="btn-sm" type="button">浏览</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-row" style="margin-top: 8px;">
+          <div class="form-group">
+            <label for="downloadSeries" style="display: flex; align-items: center; flex-direction: row;">
+              <input type="checkbox" id="downloadSeries" style="margin-right: 6px;">
+              下载整个系列 (Download full series)
+            </label>
+          </div>
+          <div class="form-group">
+            <label for="burnSubtitleMode">硬嵌入字幕 (Burn subtitles into video)</label>
+            <select id="burnSubtitleMode">
+              <option value="none" selected>不嵌入 (None)</option>
+              <option value="en">仅英语 (English only)</option>
+              <option value="zh">仅中文 (Chinese only)</option>
+              <option value="en-zh">中英双语 (English + Chinese)</option>
+              <option value="tr">仅土耳其语 (Turkish only)</option>
+              <option value="en-tr">英土双语 (English + Turkish)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="action-row" style="margin-top: 4px;">
+          <button id="startBtn" class="btn-primary">Start</button>
+          <button id="cancelBtn" class="btn-cancel" style="display: none;">Cancel</button>
+          <span id="statusBadge" class="badge idle">Ready</span>
+        </div>
+      </section>
+
+      <!-- Progress Card -->
+      <section class="card progress-section">
+        <div class="progress-bar-bg">
+          <div id="progressBar" class="progress-bar-fill"></div>
+        </div>
+        <div class="progress-steps">
+          <span class="step">Download</span>
+          <span class="step">Transcribe</span>
+          <span class="step">Translate</span>
+          <span class="step">Burn</span>
+        </div>
+      </section>
+
+      <!-- Log Card -->
+      <section class="card" style="flex: 1; display: flex; flex-direction: column;">
+        <div class="output-header">
+          <h2>Log</h2>
+          <div style="display: flex; gap: 6px;">
+            <button id="clearDlBtn" class="btn-sm" style="background: var(--red); color: #fff;">Clear Downloads</button>
+            <button id="clearBtn" class="btn-sm">Clear</button>
+          </div>
+        </div>
+        <pre id="logBox" class="log-box"></pre>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

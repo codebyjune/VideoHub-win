@@ -1,0 +1,30 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Whisper 模型缓存（体积大，首次运行自动下载）
+models/
+
+# 输出
+downloads/
+
+# 工具缓存
+.uv-cache/
+.hf-cache/
+.npm-cache/
+.tmp/
+
+# Node
+node_modules/
+electron-app/dist/
+
+# 预置二进制（体积大，用 node fetch-tools.js 获取）
+bin/*.exe
+
+# macOS
+.DS_Store
+._*
+
+# 临时字幕
+downloads/_sub_tmp_*.srt
