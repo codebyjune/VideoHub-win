@@ -147,6 +147,31 @@ const ENV_RPM_LIMIT = (() => {
 // 拆到 2 条会产生 ~16 层递归、每行一次请求，放大过于严重。
 const MIN_SPLIT_SIZE = 8;
 
+// ── 输出 token 预算 ─────────────────────────────────────────────────────
+// 推理模型（deepseek-flash/reasoner 等）会先输出 thinking，再输出 text，两者共用
+// max_tokens 预算。预算不足时 thinking 会把额度吃光，响应里只剩 thinking、没有
+// text（stop_reason=max_tokens）——表现为「模型只返回了思考内容」。
+//
+// 处理策略：先按正常预算请求；命中该错误时逐级抬高预算重试；到顶仍拿不到 text，
+// 就让上层按「数量不匹配」把批次拆小（批次越小，思考越短）再收敛，绝不整体失败。
+//
+// 可用环境变量覆盖（无需改代码）：
+//   set VIDEOSUB_LLM_MAX_TOKENS=32000        起始预算
+//   set VIDEOSUB_LLM_MAX_TOKENS_CAP=64000    加码上限
+const MAX_OUTPUT_TOKENS = (() => {
+  const v = parseInt(process.env.VIDEOSUB_LLM_MAX_TOKENS || "", 10);
+  return Number.isFinite(v) && v > 0 ? v : 16000;
+})();
+const MAX_OUTPUT_TOKENS_CAP = (() => {
+  const v = parseInt(process.env.VIDEOSUB_LLM_MAX_TOKENS_CAP || "", 10);
+  return Number.isFinite(v) && v > MAX_OUTPUT_TOKENS ? v : Math.max(64000, MAX_OUTPUT_TOKENS);
+})();
+
+/** 模型只输出 thinking、没输出 text 的可恢复错误（由 shared.extractResponseText 打标）。 */
+function isThinkingOnlyError(e) {
+  return !!(e && e.thinkingOnly);
+}
+
 class Semaphore {
   constructor(max) {
     this.max = max;
@@ -409,6 +434,8 @@ async function translateOneBatch(batch, batchIndex, batchCount, client, llmModel
   const lang = LANG_CONFIG[targetLang] || LANG_CONFIG.zh;
   const n = batch.length;
   const systemPrompt = buildTranslationSystemPrompt(targetLang);
+  // 本批次是否因「思考耗尽预算」而放弃（决定是否跳过严格提示、直接拆分）
+  let exhaustedThinking = false;
 
   const request = (items, strict) => {
     const json = JSON.stringify(items.map((e) => e.text));
@@ -426,24 +453,50 @@ Each line below is a SEPARATE subtitle timestamp entry. NEVER merge adjacent lin
   };
 
   const ask = async (items, strict, tag) => {
-    // 注意：把「取文本」这一步也放进 callWithRetry ——
-    // 模型只返回 thinking（token 预算被思考耗尽）是可重试的瞬时故障。
-    const raw = await callWithRetry(async () => {
-      const response = await createMessage(client, {
-        model: llmModel,
-        system: systemPrompt,
-        messages: [{ role: "user", content: request(items, strict) }],
-        temperature: strict ? 0.1 : 0.3,
-        max_tokens: 16000,
-      });
-      return extractResponseText(response).trim();
-    }, tag);
-    return parseTranslationResponse(raw, items.length);
+    // 注意：把「取文本」这一步也放进 callWithRetry —— 网络/限流类故障由它重试。
+    //
+    // 但「模型只返回 thinking」不是网络故障，callWithRetry 识别不了（错误没有
+    // HTTP status），会直接抛出并让整个任务失败。这里单独处理：先按正常预算请求，
+    // 命中时逐级抬高 max_tokens 重试；到顶仍失败则返回 null，交给上层按
+    // 「数量不匹配」拆分批次 / 逐条翻译兜底。
+    let maxTokens = MAX_OUTPUT_TOKENS;
+    for (;;) {
+      try {
+        const raw = await callWithRetry(async () => {
+          const response = await createMessage(client, {
+            model: llmModel,
+            system: systemPrompt,
+            messages: [{ role: "user", content: request(items, strict) }],
+            temperature: strict ? 0.1 : 0.3,
+            max_tokens: maxTokens,
+          });
+          return extractResponseText(response).trim();
+        }, tag);
+        return parseTranslationResponse(raw, items.length);
+      } catch (e) {
+        if (!isThinkingOnlyError(e)) {
+          // 正常预算下的非思考错误（鉴权/地址/网络等）是真故障，直接抛出；
+          // 若是抬高预算后才出现的错误（例如该模型 max_tokens 上限更低，返回 400），
+          // 停止加码，转交上层拆分兜底。
+          if (maxTokens === MAX_OUTPUT_TOKENS) throw e;
+          sendLog(`    ⚠ ${tag} 提高 token 预算后仍失败（${e.message.slice(0, 60)}），转为拆分重试...`);
+          break;
+        }
+        const next = Math.min(maxTokens * 2, MAX_OUTPUT_TOKENS_CAP);
+        if (next <= maxTokens) break; // 已到上限，无法再加码
+        sendLog(`    ↻ ${tag} 模型只输出思考内容（max_tokens=${maxTokens} 被耗尽），提高到 ${next} 重试...`);
+        maxTokens = next;
+      }
+    }
+    sendLog(`    ⚠ ${tag} 多次仅返回思考内容，拆分为更小批次重试...`);
+    exhaustedThinking = true;
+    return null;
   };
 
-  // ① 先按宽松提示请求；数量不匹配时用更严格的提示再问一次
+  // ① 先按宽松提示请求；数量不匹配时用更严格的提示再问一次。
+  //    但「思考耗尽预算」时严格提示不会让模型少想，直接跳到拆分更划算。
   let arr = await ask(batch, false, `第 ${batchIndex + 1} 批`);
-  if (!arr) {
+  if (!arr && !exhaustedThinking) {
     sendLog(`    ⚠ 第 ${batchIndex + 1} 批数量不匹配，用更严格的提示重试...`);
     arr = await ask(batch, true, `第 ${batchIndex + 1} 批(严格)`);
   }
@@ -506,7 +559,7 @@ async function translateOneByOne(entries, client, llmModel, targetLang) {
           messages: [{ role: "user", content: userPromptFor(entries[i].text) }],
           temperature: attempt === 0 ? 0.3 : 0.1,
           // reasoning 模型会先输出 thinking，预算必须给足，否则拿不到 text
-          max_tokens: 8192,
+          max_tokens: MAX_OUTPUT_TOKENS,
         });
 
         const raw = sanitizeSingleTranslation(
@@ -744,7 +797,7 @@ async function recoverEmptyTranslations(entries, lines, client, llmModel, target
             system: conciseSystem,
             messages: [{ role: "user", content: `Translate into ${lang.target}:\n\n${entries[i].text}` }],
             temperature: 0.2,
-            max_tokens: 8192,
+            max_tokens: MAX_OUTPUT_TOKENS,
           });
           return sanitizeSingleTranslation(extractResponseText(r), targetLang);
         }, `补录第 ${i + 1} 条`);

@@ -158,10 +158,15 @@ function extractResponseText(response) {
   const hasThinking = response.content.some((b) => b.type === "thinking");
   const types = response.content.map((b) => b.type).join(", ");
   if (hasThinking) {
-    throw new Error(
+    // 打上机器可读标记：调用方（translation.js）据此识别「思考吃光预算」这种
+    // 可恢复故障，进而抬高 max_tokens 或拆小批次重试，而不是直接把整个任务判死。
+    const err = new Error(
       `模型只返回了思考内容(thinking)，没有返回最终答案(text)。` +
       `通常因为 max_tokens 被思考过程耗尽（stop_reason=${response.stop_reason || "?"}）。`
     );
+    err.thinkingOnly = true;
+    err.stopReason = response.stop_reason;
+    throw err;
   }
   throw new Error(`响应中没有文本内容，block 类型: ${types}`);
 }
